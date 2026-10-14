@@ -446,7 +446,7 @@ def cmd_install(gh, args):
             data = base64.b64decode(blob.get("content", ""))
         target.write_bytes(data)
     print(f"\nInstalled {len(files)} file(s) to {dest}")
-    print("Restart Claude Code (or start a new session) to pick it up.")
+    print("Claude Code picks it up without a restart. If the skills folder is new, run /reload-skills. Check with /skills.")
 
 
 # --------------------------------------------------------------------------- main

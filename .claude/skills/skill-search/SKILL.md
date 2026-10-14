@@ -55,7 +55,7 @@ Results are ranked by `log(stars) + freshness` weighted by how well they match t
    python3 scripts/skill_search.py install owner/repo path/to/skill --yes            # ~/.claude/skills (all projects)
    python3 scripts/skill_search.py install owner/repo path/to/skill --dest .claude/skills --yes   # this project only
    ```
-   Tell the user to start a new session so Claude picks up the skill.
+   Claude Code picks up new skills in the open session without a restart. If `~/.claude/skills` didn't exist when the session started, run `/reload-skills`. Confirm with `/skills`.
 
 ## Notes
 
