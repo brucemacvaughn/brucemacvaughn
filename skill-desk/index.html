@@ -659,10 +659,31 @@ const GH_FIX = {
   not_granted: "GitHub isn't available in this view.",
   capability_disabled: "GitHub isn't available in this view.",
 };
-function ghErr(e) { return GH_FIX[e?.code] || (e?.code === "tool_error" ? "GitHub said: " + (e.message || "the search failed").slice(0, 200) : "GitHub search failed (" + (e?.code || "error") + ")."); }
+function ghErr(e) {
+  if (GH_FIX[e?.code]) return GH_FIX[e.code];
+  if (e?.code === "tool_error") return "GitHub said: " + String(e.message || "the search failed").slice(0, 200);
+  if (e?.code === "upstream_error") return "GitHub didn't answer this time" + (e.message ? ` (${String(e.message).slice(0, 140)})` : "") + ". Press Try again.";
+  return "GitHub search failed (" + (e?.code || "error") + ").";
+}
+/* The first GitHub call may have to ask the viewer for permission. Calls fired
+   while that prompt is open come back upstream_error (retryable), so the first
+   call runs alone and everything else waits for it to settle. */
+let ghGate = null;
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+async function ghRaw(tool, input, cache) {
+  const opts = cache ? { cache: { staleTime: 120000, gcTime: 900000 } } : undefined;
+  try { return await S.mcp.callTool(GH, tool, input, opts); }
+  catch (e) {
+    if (!e?.retryable) throw e;  // every call here is a read, so one retry is safe
+    await sleep(Math.min(e.retryAfterMs || 0, 15000) + 600 + Math.random() * 900);
+    return S.mcp.callTool(GH, tool, input, opts);
+  }
+}
 async function ghCall(tool, input, cache = true) {
   if (!S.mcp) throw { code: "not_granted" };
-  return S.mcp.callTool(GH, tool, input, cache ? { cache: { staleTime: 120000, gcTime: 900000 } } : undefined);
+  if (!ghGate) { const first = ghRaw(tool, input, cache); ghGate = first.then(() => true, () => { ghGate = null; return false; }); return first; }
+  await ghGate;
+  return ghRaw(tool, input, cache);
 }
 function asJson(r) {
   if (r && r.payload && typeof r.payload === "object") return r.payload;
@@ -1230,15 +1251,17 @@ async function loadRadar() {
   top.innerHTML = fresh.innerHTML = `<p class="muted"><span class="spin"></span> Loading…</p>`;
   const row = r => `<a href="${h(safeUrl(r.html_url))}" target="_blank" rel="noopener"><span>${h(r.full_name)}<br><small class="muted">${h((r.description || "").slice(0, 90))}</small></span><span class="mono muted stars">★ ${fmtStars(r.stargazers_count)}</span></a>`;
   const since = new Date(Date.now() - 14 * 864e5).toISOString().slice(0, 10);
+  const retry = `<button class="btn small" type="button" data-radar-retry style="margin-top:.5rem">Try again</button>`;
   try {
-    const [a, b] = await Promise.all([repoSearch("topic:claude-skills", 10), repoSearch("topic:agent-skills", 10)]);
+    const a = await repoSearch("topic:claude-skills", 10);
+    const b = await repoSearch("topic:agent-skills", 10).catch(() => []);
     const m = new Map(); [...a, ...b].forEach(r => m.set(r.full_name, r));
     top.innerHTML = [...m.values()].sort((x, y) => y.stargazers_count - x.stargazers_count).slice(0, 8).map(row).join("") || `<p class="muted">Nothing found.</p>`;
-  } catch (e) { top.innerHTML = `<div class="banner warn">${h(ghErr(e))}</div>`; }
+  } catch (e) { top.innerHTML = `<div class="banner warn">${h(ghErr(e))}<br>${retry}</div>`; }
   try {
     const items = await repoSearch(`claude skills pushed:>${since}`, 10);
     fresh.innerHTML = items.filter(r => SKILLISH.test(`${r.name} ${r.description || ""}`)).slice(0, 8).map(row).join("") || `<p class="muted">Nothing new in the last two weeks.</p>`;
-  } catch (e) { fresh.innerHTML = `<div class="banner warn">${h(ghErr(e))}</div>`; }
+  } catch (e) { fresh.innerHTML = `<div class="banner warn">${h(ghErr(e))}<br>${retry}</div>`; }
 }
 function renderWatches() {
   const box = $("#watch-list");
@@ -1327,6 +1350,7 @@ document.addEventListener("click", async e => {
   else if (t.id === "build-again") { const id = M.linkId; closeModal(); openBuild(id); }
   else if (d.libdel) { if (t.dataset.armed) { if (S.db) S.db.collection("library").doc(d.libdel).delete().catch(() => toast("Couldn't remove")); else { S.library = S.library.filter(x => x.id !== d.libdel); renderLibrary(); } } else { t.dataset.armed = "1"; t.textContent = "Confirm"; } }
   else if (d.wrun) runWatch(d.wrun);
+  else if ("radarRetry" in d) { S.mcp?.invalidate(GH).catch(() => {}); loadRadar(); }
   else if (d.wdel) { if (S.db) S.db.collection("hunts").doc(d.wdel).delete().catch(() => toast("Couldn't remove")); else { S.hunts = S.hunts.filter(x => x.id !== d.wdel); renderWatches(); } }
 });
 document.addEventListener("change", e => {
