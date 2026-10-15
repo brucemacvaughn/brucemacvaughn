@@ -673,8 +673,23 @@ async function ghState() {
   try { return await S.perms.state("mcp:" + GH); } catch { return "prompt"; }
 }
 function isAccessErr(e) { return ["not_in_manifest", "approval_required", "consent_required"].includes(e?.code) || (e?.code === "upstream_error" && /confirm|consent|access/i.test(e?.message || "")); }
+function radarLinks(kind) {
+  const since = new Date(Date.now() - 14 * 864e5).toISOString().slice(0, 10);
+  const L = kind === "top" ? [
+    ["claude-skills topic, most stars", "https://github.com/topics/claude-skills?o=desc&s=stars"],
+    ["agent-skills topic, most stars", "https://github.com/topics/agent-skills?o=desc&s=stars"],
+    ["“claude skills” repos, most stars", "https://github.com/search?type=repositories&s=stars&o=desc&q=" + encodeURIComponent("claude skills")],
+    ["Claude Code plugins, most stars", "https://github.com/search?type=repositories&s=stars&o=desc&q=" + encodeURIComponent("claude code plugin marketplace")],
+  ] : [
+    ["Skill repos pushed since " + since, "https://github.com/search?type=repositories&s=updated&o=desc&q=" + encodeURIComponent("claude skills pushed:>" + since)],
+    ["Newest SKILL.md files GitHub indexed", "https://github.com/search?type=code&s=indexed&o=desc&q=" + encodeURIComponent("filename:SKILL.md")],
+    ["claude-skills topic, recently updated", "https://github.com/topics/claude-skills?o=desc&s=updated"],
+    ["New plugin marketplaces", "https://github.com/search?type=code&q=" + encodeURIComponent("path:.claude-plugin filename:marketplace.json")],
+  ];
+  return `<div class="mini">${L.map(([t, u]) => `<a href="${h(u)}" target="_blank" rel="noopener"><span>${h(t)}</span><span class="mono muted">↗</span></a>`).join("")}</div>`;
+}
 function ghGateHtml(st) {
-  if (st === "unavailable") return `<div class="banner warn">Live GitHub results need the GitHub connector. Add GitHub in claude.ai Settings → Connectors, then reload this page.</div>`;
+  if (st === "unavailable" || st === "none") return `<div class="banner warn" style="margin-bottom:.5rem">Live lists need a GitHub connector on your claude.ai account, and none is connected yet. Until then, these links open the same lists on GitHub.</div>`;
   if (st === "denied") return `<div class="banner warn" style="display:grid;gap:.5rem;justify-items:start"><span>GitHub is switched off for this page. Turn it back on to search.</span><button class="btn small primary" type="button" data-gh-manage>Open permissions</button></div>`;
   return `<div class="banner" style="display:grid;gap:.5rem;justify-items:start"><span>Skill Desk needs your OK to search GitHub with your connector. It only reads public repositories and files.</span><button class="btn small primary" type="button" data-gh-allow>Allow GitHub</button></div>`;
 }
@@ -684,6 +699,7 @@ async function allowGithub() {
   updateGhStatus(st);
   if (st === "granted" || !S.perms) { ghGate = null; S.radarLoaded = false; if (S.tab === "radar") loadRadar(); if (S.tab === "hunt" && $("#hunt-q").value.trim()) runHunt(); }
   else if (st === "denied") toast("GitHub stays off. Use Open permissions to turn it on.");
+  else { toast("No GitHub connector found on your claude.ai account."); if (S.tab === "radar") { $("#radar-top").innerHTML = ghGateHtml("none") + radarLinks("top"); $("#radar-fresh").innerHTML = radarLinks("fresh"); } }
   return st;
 }
 async function manageGithub() {
@@ -1289,7 +1305,7 @@ async function loadRadar() {
   S.radarLoaded = true; renderSources(); renderWatches();
   const top = $("#radar-top"), fresh = $("#radar-fresh");
   const st = await ghState(); updateGhStatus(st);
-  if (st !== "granted") { S.radarLoaded = false; top.innerHTML = ghGateHtml(st); fresh.innerHTML = `<p class="muted" style="margin:0">Waiting for GitHub access.</p>`; return; }
+  if (st !== "granted") { S.radarLoaded = false; top.innerHTML = ghGateHtml(st) + radarLinks("top"); fresh.innerHTML = radarLinks("fresh"); return; }
   top.innerHTML = fresh.innerHTML = `<p class="muted"><span class="spin"></span> Loading…</p>`;
   const row = r => `<a href="${h(safeUrl(r.html_url))}" target="_blank" rel="noopener"><span>${h(r.full_name)}<br><small class="muted">${h((r.description || "").slice(0, 90))}</small></span><span class="mono muted stars">★ ${fmtStars(r.stargazers_count)}</span></a>`;
   const since = new Date(Date.now() - 14 * 864e5).toISOString().slice(0, 10);
@@ -1299,11 +1315,11 @@ async function loadRadar() {
     const b = await repoSearch("topic:agent-skills", 10).catch(() => []);
     const m = new Map(); [...a, ...b].forEach(r => m.set(r.full_name, r));
     top.innerHTML = [...m.values()].sort((x, y) => y.stargazers_count - x.stargazers_count).slice(0, 8).map(row).join("") || `<p class="muted">Nothing found.</p>`;
-  } catch (e) { top.innerHTML = isAccessErr(e) ? ghGateHtml("prompt") : `<div class="banner warn">${h(ghErr(e))}<br>${retry}</div>`; }
+  } catch (e) { top.innerHTML = (isAccessErr(e) ? ghGateHtml("none") : `<div class="banner warn">${h(ghErr(e))}<br>${retry}</div>`) + radarLinks("top"); }
   try {
     const items = await repoSearch(`claude skills pushed:>${since}`, 10);
     fresh.innerHTML = items.filter(r => SKILLISH.test(`${r.name} ${r.description || ""}`)).slice(0, 8).map(row).join("") || `<p class="muted">Nothing new in the last two weeks.</p>`;
-  } catch (e) { fresh.innerHTML = isAccessErr(e) ? `<p class="muted" style="margin:0">Waiting for GitHub access.</p>` : `<div class="banner warn">${h(ghErr(e))}<br>${retry}</div>`; }
+  } catch (e) { fresh.innerHTML = (isAccessErr(e) ? "" : `<div class="banner warn">${h(ghErr(e))}<br>${retry}</div>`) + radarLinks("fresh"); }
 }
 function renderWatches() {
   const box = $("#watch-list");
