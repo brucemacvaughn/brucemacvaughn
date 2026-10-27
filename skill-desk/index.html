@@ -353,8 +353,8 @@
       <div class="head">
         <div>
           <span class="eyebrow">Drawer 3 · Library</span>
-          <h2>Your shortlist</h2>
-          <p>Skills you saved from a hunt or an investigation. Track each one from saved to tested to installed, and keep notes on what worked.</p>
+          <h2>Your library</h2>
+          <p>Skills you saved from a hunt or an investigation. The Shortlist holds what you haven't installed yet. Once a skill is marked installed, it moves to Installed with its notes.</p>
         </div>
         <div class="filters" id="lib-filters" role="group" aria-label="Filter by status"></div>
       </div>
@@ -587,7 +587,7 @@ const store = { get(k, d) { try { const v = localStorage.getItem("skilldesk:" + 
 const S = {
   tab: "inbox", links: [], library: [], hunts: [], results: [], lastQuery: "",
   db: null, mcp: null, sample: null, downloads: null,
-  progress: {}, shots: {}, running: {}, inboxFilter: "all", libFilter: "all",
+  progress: {}, shots: {}, running: {}, inboxFilter: "all", libFilter: "shortlist",
   radarLoaded: false,
 };
 
@@ -1069,6 +1069,7 @@ async function suggestKeywords() {
 
 /* --------------------------------------------------------------- library */
 const LIB_STATUS = [["all", "All"], ["saved", "Saved"], ["testing", "Testing"], ["installed", "Installed"], ["rejected", "Rejected"]];
+const LIB_VIEWS = [["shortlist", "Shortlist", x => x.status === "saved" || x.status === "testing" || !x.status], ["installed", "Installed", x => x.status === "installed"], ["rejected", "Rejected", x => x.status === "rejected"], ["all", "All", () => true]];
 async function saveToLibrary(d) {
   const id = docId(d.repo, d.path);
   if (S.library.some(x => x.id === id)) { toast("Already in your Library"); return; }
@@ -1083,17 +1084,20 @@ async function updateLib(id, data) {
 }
 function renderLibrary() {
   renderReadouts();
-  $("#c-lib").textContent = S.library.length;
-  $("#lib-filters").innerHTML = LIB_STATUS.map(([k, v]) => `<button class="chip" aria-pressed="${S.libFilter === k}" data-lfilter="${k}">${v}</button>`).join("");
-  const list = S.library.filter(x => S.libFilter === "all" || x.status === S.libFilter).sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0));
+  const view = LIB_VIEWS.find(v => v[0] === S.libFilter) || LIB_VIEWS[0];
+  $("#c-lib").textContent = S.library.filter(LIB_VIEWS[0][2]).length;
+  $("#lib-filters").innerHTML = LIB_VIEWS.map(([k, v, f]) => `<button class="chip" aria-pressed="${view[0] === k}" data-lfilter="${k}">${v} <span class="count">${S.library.filter(f).length}</span></button>`).join("");
+  const list = S.library.filter(view[2]).sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0));
+  const emptyCopy = { shortlist: "Nothing waiting. Everything you saved is installed or rejected.", installed: "Nothing marked installed yet. After you install a skill, press Mark installed on its Install tab, or set its status here.", rejected: "Nothing rejected.", all: "" };
+  if (S.library.length && !list.length) { $("#lib-list").innerHTML = `<p class="muted" style="grid-column:1/-1;margin:0">${h(emptyCopy[view[0]])}</p>`; return; }
   if (!S.library.length) { $("#lib-list").innerHTML = `<div class="empty" style="grid-column:1/-1"><h3>Your shortlist is empty</h3><p class="muted" style="margin:0">Press <b>Save to Library</b> on any hunt result or investigation match. Saved skills keep their install commands and your notes.</p><button class="btn" data-goto="hunt">Start a hunt</button></div>`; return; }
   $("#lib-list").innerHTML = list.map(x => `<article class="card">
     <div style="display:flex;justify-content:space-between;gap:10px;align-items:start"><div style="min-width:0"><div class="card-title"><a href="${h(safeUrl(x.url))}" target="_blank" rel="noopener">${h(x.name)}</a></div><div class="card-url">${h(x.repo)}${x.path !== "." ? "/" + h(x.path) : ""}</div></div><span class="mono stars muted">★ ${fmtStars(x.stars)}</span></div>
     ${x.desc ? `<p style="margin:0;font-size:.9rem">${h(x.desc.slice(0, 240))}</p>` : ""}
     <textarea data-libnote="${h(x.id)}" placeholder="Notes: what you used it for, what broke…" aria-label="Notes">${h(x.note || "")}</textarea>
     <div class="actions"><select class="field" style="padding:4px 8px;font-size:.85rem" data-libstatus="${h(x.id)}" aria-label="Status">${LIB_STATUS.slice(1).map(([k, v]) => `<option value="${k}" ${x.status === k ? "selected" : ""}>${v}</option>`).join("")}</select>
-    <button class="btn small primary" data-preview="${h(x.repo)}" data-path="${h(x.path)}" data-tab="install">Install</button>
-    <button class="btn small ghost" data-libdel="${h(x.id)}" style="margin-left:auto">Remove</button></div>
+    ${x.status === "installed" ? `<span class="status installed">Installed</span><button class="btn small" data-preview="${h(x.repo)}" data-path="${h(x.path)}">View</button>` : `<button class="btn small primary" data-preview="${h(x.repo)}" data-path="${h(x.path)}" data-tab="install">Install</button>`}
+    <button class="btn small ghost" data-libdel="${h(x.id)}" style="margin-left:auto" title="Delete this record and its notes">Remove</button></div>
   </article>`).join("");
 }
 
