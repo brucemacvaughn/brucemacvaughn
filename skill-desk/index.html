@@ -1071,7 +1071,7 @@ const LIB_STATUS = [["all", "All"], ["saved", "Saved"], ["testing", "Testing"], 
 async function saveToLibrary(d) {
   const id = docId(d.repo, d.path);
   if (S.library.some(x => x.id === id)) { toast("Already in your Library"); return; }
-  const doc = { repo: d.repo, path: d.path || ".", name: d.name || d.repo.split("/")[1], url: d.url || `https://github.com/${d.repo}`, stars: +d.stars || 0, desc: d.desc || "", updated: d.updated || null, status: "saved", note: "", savedAt: Date.now() };
+  const doc = { repo: d.repo, path: d.path || ".", name: d.name || d.repo.split("/")[1], url: d.url || `https://github.com/${d.repo}`, stars: +d.stars || 0, desc: d.desc || "", updated: d.updated || null, status: d.status || "saved", note: "", savedAt: Date.now() };
   if (!S.db) { S.library.push({ id, ...doc }); renderLibrary(); toast("Saved for this visit only"); return; }
   try { await S.db.collection("library").doc(id).set(doc); toast("Saved to Library"); } catch (e) { toast("Couldn't save: " + (e.code || "error")); }
 }
@@ -1091,7 +1091,7 @@ function renderLibrary() {
     ${x.desc ? `<p style="margin:0;font-size:.9rem">${h(x.desc.slice(0, 240))}</p>` : ""}
     <textarea data-libnote="${h(x.id)}" placeholder="Notes: what you used it for, what broke…" aria-label="Notes">${h(x.note || "")}</textarea>
     <div class="actions"><select class="field" style="padding:4px 8px;font-size:.85rem" data-libstatus="${h(x.id)}" aria-label="Status">${LIB_STATUS.slice(1).map(([k, v]) => `<option value="${k}" ${x.status === k ? "selected" : ""}>${v}</option>`).join("")}</select>
-    <button class="btn small primary" data-preview="${h(x.repo)}" data-path="${h(x.path)}">Install</button>
+    <button class="btn small primary" data-preview="${h(x.repo)}" data-path="${h(x.path)}" data-tab="install">Install</button>
     <button class="btn small ghost" data-libdel="${h(x.id)}" style="margin-left:auto">Remove</button></div>
   </article>`).join("");
 }
@@ -1101,8 +1101,8 @@ let M = null; // current modal state
 function openModal(html) { $("#modal-box").innerHTML = html; $("#modal").hidden = false; $("#modal-box").focus?.(); }
 function closeModal() { $("#modal").hidden = true; $("#modal-box").innerHTML = ""; if (M?.ctl) M.ctl.abort(); M = null; }
 
-async function openPreview(repo, path, branch) {
-  M = { kind: "preview", repo, path: path || ".", branch: branch || null, tab: "md", text: null, fm: {}, market: null, review: null, error: null };
+async function openPreview(repo, path, branch, tab) {
+  M = { kind: "preview", repo, path: path || ".", branch: branch || null, tab: tab || "md", text: null, fm: {}, market: null, review: null, error: null };
   renderPreview();
   if (!S.mcp) { M.error = "Previews need the GitHub connector. Add GitHub in claude.ai Settings → Connectors, then reload."; renderPreview(); return; }
   const file = M.path === "." ? "SKILL.md" : M.path.replace(/\/$/, "") + "/SKILL.md";
@@ -1123,16 +1123,17 @@ function installBlocks() {
   const { repo, path } = M; const name = slug(M.fm.name || (path === "." ? repo.split("/")[1] : path.split("/").pop()));
   const tmp = "/tmp/" + slug(repo.replace("/", "-"));
   const src = path === "." ? tmp : `${tmp}/${path}`;
+  const web = `https://github.com/${repo}${path !== "." ? "/tree/HEAD/" + path : ""}`;
   const clone = (dest) => `git clone --depth 1 https://github.com/${repo}.git ${tmp} \\\n  && mkdir -p ${dest} \\\n  && cp -R ${src} ${dest}/${name}${path === "." ? ` \\\n  && rm -rf ${dest}/${name}/.git` : ""} \\\n  && rm -rf ${tmp}`;
   const blocks = [];
-  if (M.market) {
-    blocks.push(["This repo is a plugin marketplace. In Claude Code, add it once:", `/plugin marketplace add ${repo}`]);
-    M.market.plugins.slice(0, 6).forEach(p => blocks.push([`Then install ${p.name}${p.desc ? ": " + p.desc.slice(0, 90) : ""}`, `/plugin install ${p.name}@${M.market.name}`]));
-  }
   if (M.text) {
-    blocks.push(["Personal skill (every project on this computer). Paste in your terminal:", clone("~/.claude/skills")]);
-    blocks.push(["Project skill (this repo only). Run from the project folder:", clone(".claude/skills")]);
-    blocks.push(["Or with the skill-search tool, if you've installed it:", `python3 ~/.claude/skills/skill-search/scripts/skill_search.py install ${repo} ${path}`]);
+    blocks.push({ g: "claude", l: "Paste this into Claude Code (terminal, desktop app or IDE):", c: `Install the Claude skill at ${web} as a personal skill in ~/.claude/skills/${name}. Show me its SKILL.md and any scripts before copying, then confirm it appears in /skills.` });
+    blocks.push({ g: "term", l: "Personal skill, for every project on this computer:", c: clone("~/.claude/skills") });
+    blocks.push({ g: "term", l: "Project skill, for one repo only (run it from the project folder):", c: clone(".claude/skills") });
+  }
+  if (M.market) {
+    blocks.push({ g: "plugin", l: "This repo is a plugin marketplace. In Claude Code, add it once:", c: `/plugin marketplace add ${repo}` });
+    M.market.plugins.slice(0, 6).forEach(p => blocks.push({ g: "plugin", l: `Then install ${p.name}${p.desc ? ": " + p.desc.slice(0, 90) : ""}`, c: `/plugin install ${p.name}@${M.market.name}` }));
   }
   return { name, blocks };
 }
@@ -1146,9 +1147,21 @@ function renderPreview() {
       `${M.fm.description ? `<p style="margin:0"><b>Triggers on:</b> ${h(M.fm.description)}</p>` : ""}${M.fm["allowed-tools"] ? `<p style="margin:0"><b>Pre-approved tools:</b> <code>${h(M.fm["allowed-tools"])}</code></p>` : ""}<pre class="skillmd">${h(M.text.slice(0, 40000))}</pre>`;
   } else if (M.tab === "install") {
     const { name, blocks } = installBlocks();
-    body = blocks.length ? `<div style="display:grid;gap:14px">${blocks.map(([l, c], i) => `<div class="cmd"><span class="lbl">${h(l)}</span><pre>${h(c)}</pre><button class="btn small copy" data-copyblock="${i}">Copy</button></div>`).join("")}
-      <div class="panel" style="background:var(--bg);display:grid;gap:6px"><b>Then</b><ol class="checklist" style="gap:8px"><li><div>No restart needed. Run <code>/skills</code> to confirm <code>${h(name)}</code> is listed. If the skills folder is brand new, run <code>/reload-skills</code> first.</div></li><li><div>Type <code>/${h(name)}</code> to run it, or ask for the task in plain words.</div></li><li><div>For claude.ai or the desktop app, press <b>Download .zip</b> and upload it in claude.ai settings under Capabilities.</div></li></ol></div></div>`
-      : (M.text == null && !M.error ? `<p class="muted"><span class="spin"></span> Loading…</p>` : `<div class="banner warn">No SKILL.md or plugin marketplace found here. <a href="https://github.com/${h(M.repo)}" target="_blank" rel="noopener">Open the repo</a> and look for a <code>skills/</code> folder, then preview that folder.</div>`);
+    const cmd = (x) => { const i = blocks.indexOf(x); return `<div class="cmd"><span class="lbl">${h(x.l)}</span><pre>${h(x.c)}</pre><button class="btn small copy" data-copyblock="${i}">Copy</button></div>`; };
+    const grp = (g) => blocks.filter(x => x.g === g).map(cmd).join("");
+    const saved = S.library.find(x => x.id === docId(M.repo, M.path));
+    body = !blocks.length ? (M.text == null && !M.error ? `<p class="muted"><span class="spin"></span> Loading…</p>` : `<div class="banner warn">No SKILL.md or plugin marketplace found here. <a href="https://github.com/${h(M.repo)}" target="_blank" rel="noopener">Open the repo</a> and look for a <code>skills/</code> folder, then preview that folder.</div>`)
+    : `<div style="display:grid;gap:1rem">
+      <p class="muted" style="margin:0">A web page can't put files on your computer, so the last step happens where you use Claude. Pick the route that matches.</p>
+      ${M.market ? `<section class="panel" style="display:grid;gap:.75rem"><span class="eyebrow">Plugin · Claude Code</span><h3>Install the plugin</h3>${grp("plugin")}<p class="muted" style="margin:0;font-size:var(--step--1)">If the install summary says <i>Run /reload-plugins to apply</i>, run <code>/reload-plugins</code>.</p></section>` : ""}
+      ${M.text ? `<section class="panel" style="display:grid;gap:.75rem"><span class="eyebrow">Route A · Easiest</span><h3>Let Claude Code install it</h3>${grp("claude")}<p class="muted" style="margin:0;font-size:var(--step--1)">Claude shows you the files, copies the folder, and checks it loaded.</p></section>
+      <section class="panel" style="display:grid;gap:.75rem"><span class="eyebrow">Route B · Terminal</span><h3>Copy the folder yourself</h3>${grp("term")}</section>
+      <section class="panel" style="display:grid;gap:.75rem"><span class="eyebrow">Route C · claude.ai &amp; the Claude app</span><h3>Upload it to your account</h3>
+        <ol class="checklist"><li><div>Press <b>Download .zip</b> below. You get a folder named <code>${h(name)}</code>.</div></li><li><div>In claude.ai, open <b>Settings → Capabilities</b>, find <b>Skills</b>, and upload the .zip.</div></li><li><div>It then works in claude.ai chats, Cowork and cloud sessions, and syncs down to Claude Code.</div></li></ol></section>` : ""}
+      <section class="panel" style="display:grid;gap:.75rem"><span class="eyebrow">Then</span>
+        <ol class="checklist"><li><div>In Claude Code, run <code>/skills</code> and check that <code>${h(name)}</code> is listed. No restart needed. If <code>~/.claude/skills</code> is brand new, run <code>/reload-skills</code> once.</div></li><li><div>Type <code>/${h(name)}</code> to run it, or ask for the task in plain words.</div></li></ol>
+        <div class="actions"><button class="btn primary" type="button" data-markinstalled>${saved?.status === "installed" ? "Installed ✓" : "Mark installed"}</button><span class="muted" style="font-size:var(--step--1)">Moves it to Installed in your Library.</span></div>
+      </section></div>`;
   } else {
     const r = M.review;
     body = !M.text ? `<p class="muted">Load a SKILL.md first.</p>` : !r ? `<div style="display:grid;gap:10px;justify-items:start"><p style="margin:0">Claude reads the SKILL.md and lists the scripts, then tells you what the skill does, what it needs, and anything risky.</p><button class="btn primary" id="do-review" ${S.sample ? "" : "disabled"}>${S.sample ? "Run safety read" : "Claude isn't available here"}</button></div>`
@@ -1167,6 +1180,12 @@ function renderPreview() {
       ${M.text ? `<button class="btn" id="do-zip" ${S.downloads ? "" : "disabled title='Downloads are off in this view'"}>Download .zip</button>` : ""}
       <a class="btn ghost" href="https://github.com/${h(M.repo)}" target="_blank" rel="noopener">Open on GitHub</a>
     </div>`);
+}
+async function markInstalled(btn) {
+  const id = docId(M.repo, M.path);
+  if (S.library.some(x => x.id === id)) await updateLib(id, { status: "installed" });
+  else await saveToLibrary({ repo: M.repo, path: M.path, name: M.fm.name || "", url: "https://github.com/" + M.repo, desc: M.fm.description || "", status: "installed" });
+  if (btn) btn.textContent = "Installed ✓"; toast("Marked installed");
 }
 async function runReview() {
   if (!M || !M.text || !S.sample) return;
@@ -1395,11 +1414,12 @@ document.addEventListener("click", async e => {
   else if (d.notesave) { const v = $("#note-" + CSS.escape(d.notesave))?.value ?? ""; await saveLink(d.notesave, { note: v.slice(0, 4000) }); renderInbox(); }
   else if ("notecancel" in d) t.closest(".note-edit")?.remove();
   else if (d.hunt) { $("#hunt-q").value = d.hunt; setTab("hunt"); runHunt(); }
-  else if (d.preview) openPreview(d.preview, d.path, d.branch);
+  else if (d.preview) openPreview(d.preview, d.path, d.branch, d.tab);
+  else if ("markinstalled" in d && M) markInstalled(t);
   else if (d.save) { try { await saveToLibrary(JSON.parse(d.save)); t.textContent = "Saved ✓"; } catch {} }
   else if (d.build) openBuild(d.build);
   else if (d.mtab && M) { M.tab = d.mtab; renderPreview(); }
-  else if (d.copyblock != null && M) copy(installBlocks().blocks[+d.copyblock][1], t);
+  else if (d.copyblock != null && M) copy(installBlocks().blocks[+d.copyblock].c, t);
   else if (t.id === "do-review") runReview();
   else if (t.id === "do-zip") downloadZip();
   else if (t.id === "build-stop") M?.ctl?.abort();
