@@ -220,6 +220,7 @@
   /* ── Commands ────────────────────────────────────────────────── */
   .cmd { position: relative; display: grid; gap: .25rem; }
   .cmd pre { margin: 0; padding: .75rem 4.5rem .75rem .875rem; background: var(--ground); border: 1px solid var(--rule); border-radius: 8px; font: .8rem/1.55 var(--mono); overflow-x: auto; white-space: pre; }
+  .cmd pre.wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
   .cmd .copy { position: absolute; right: .5rem; top: 1.75rem; }
   .cmd .lbl { font-size: var(--step--1); font-weight: 500; }
 
@@ -1127,7 +1128,7 @@ function installBlocks() {
   const clone = (dest) => `git clone --depth 1 https://github.com/${repo}.git ${tmp} \\\n  && mkdir -p ${dest} \\\n  && cp -R ${src} ${dest}/${name}${path === "." ? ` \\\n  && rm -rf ${dest}/${name}/.git` : ""} \\\n  && rm -rf ${tmp}`;
   const blocks = [];
   if (M.text) {
-    blocks.push({ g: "claude", l: "Paste this into Claude Code (terminal, desktop app or IDE):", c: `Install the Claude skill at ${web} as a personal skill in ~/.claude/skills/${name}. Show me its SKILL.md and any scripts before copying, then confirm it appears in /skills.` });
+    blocks.push({ g: "claude", l: "Paste this into Claude Code on your computer (terminal, desktop app or IDE):", c: `Install the Claude skill at ${web} as a personal skill in ~/.claude/skills/${name}. Show me its SKILL.md and any scripts before copying, then confirm it appears in /skills.` });
     blocks.push({ g: "term", l: "Personal skill, for every project on this computer:", c: clone("~/.claude/skills") });
     blocks.push({ g: "term", l: "Project skill, for one repo only (run it from the project folder):", c: clone(".claude/skills") });
   }
@@ -1147,14 +1148,14 @@ function renderPreview() {
       `${M.fm.description ? `<p style="margin:0"><b>Triggers on:</b> ${h(M.fm.description)}</p>` : ""}${M.fm["allowed-tools"] ? `<p style="margin:0"><b>Pre-approved tools:</b> <code>${h(M.fm["allowed-tools"])}</code></p>` : ""}<pre class="skillmd">${h(M.text.slice(0, 40000))}</pre>`;
   } else if (M.tab === "install") {
     const { name, blocks } = installBlocks();
-    const cmd = (x) => { const i = blocks.indexOf(x); return `<div class="cmd"><span class="lbl">${h(x.l)}</span><pre>${h(x.c)}</pre><button class="btn small copy" data-copyblock="${i}">Copy</button></div>`; };
+    const cmd = (x) => { const i = blocks.indexOf(x); return `<div class="cmd"><span class="lbl">${h(x.l)}</span><pre${x.g === "claude" ? ' class="wrap"' : ""}>${h(x.c)}</pre><button class="btn small copy" data-copyblock="${i}">Copy</button></div>`; };
     const grp = (g) => blocks.filter(x => x.g === g).map(cmd).join("");
     const saved = S.library.find(x => x.id === docId(M.repo, M.path));
     body = !blocks.length ? (M.text == null && !M.error ? `<p class="muted"><span class="spin"></span> Loading…</p>` : `<div class="banner warn">No SKILL.md or plugin marketplace found here. <a href="https://github.com/${h(M.repo)}" target="_blank" rel="noopener">Open the repo</a> and look for a <code>skills/</code> folder, then preview that folder.</div>`)
     : `<div style="display:grid;gap:1rem">
       <p class="muted" style="margin:0">A web page can't put files on your computer, so the last step happens where you use Claude. Pick the route that matches.</p>
       ${M.market ? `<section class="panel" style="display:grid;gap:.75rem"><span class="eyebrow">Plugin · Claude Code</span><h3>Install the plugin</h3>${grp("plugin")}<p class="muted" style="margin:0;font-size:var(--step--1)">If the install summary says <i>Run /reload-plugins to apply</i>, run <code>/reload-plugins</code>.</p></section>` : ""}
-      ${M.text ? `<section class="panel" style="display:grid;gap:.75rem"><span class="eyebrow">Route A · Easiest</span><h3>Let Claude Code install it</h3>${grp("claude")}<p class="muted" style="margin:0;font-size:var(--step--1)">Claude shows you the files, copies the folder, and checks it loaded.</p></section>
+      ${M.text ? `<section class="panel" style="display:grid;gap:.75rem"><span class="eyebrow">Route A · Easiest</span><h3>Let Claude Code install it</h3>${grp("claude")}<p class="muted" style="margin:0;font-size:var(--step--1)">Claude shows you the files, copies the folder, and checks it loaded. Use a session running on your own computer: a cloud session (claude.ai/code) would install it into a temporary container that disappears.</p></section>
       <section class="panel" style="display:grid;gap:.75rem"><span class="eyebrow">Route B · Terminal</span><h3>Copy the folder yourself</h3>${grp("term")}</section>
       <section class="panel" style="display:grid;gap:.75rem"><span class="eyebrow">Route C · claude.ai &amp; the Claude app</span><h3>Upload it to your account</h3>
         <ol class="checklist"><li><div>Press <b>Download .zip</b> below. You get a folder named <code>${h(name)}</code>.</div></li><li><div>In claude.ai, open <b>Settings → Capabilities</b>, find <b>Skills</b>, and upload the .zip.</div></li><li><div>It then works in claude.ai chats, Cowork and cloud sessions, and syncs down to Claude Code.</div></li></ol></section>` : ""}
