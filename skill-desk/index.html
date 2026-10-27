@@ -1205,7 +1205,7 @@ async function runReview() {
   let extra = "";
   try {
     const all = M.path === "." ? [] : await collectFiles(M.repo, M.path);
-    const pick = all.filter(f => /\.(py|sh|bash|zsh|js|mjs|cjs|ts|rb|ps1|bat|md)$/i.test(f) && !/\/SKILL\.md$/i.test(f)).slice(0, 8);
+    const pick = all.filter(f => /\.(py|sh|bash|zsh|js|mjs|cjs|ts|rb|ps1|bat|md)$/i.test(f) && !/\/SKILL\.md$/i.test(f)).sort((a, b) => (/\.md$/i.test(a) ? 1 : 0) - (/\.md$/i.test(b) ? 1 : 0)).slice(0, 10);
     if (all.length && !files.length) files = all;
     let budget = 60000;
     for (const f of pick) {
