@@ -1087,7 +1087,7 @@ const LIB_VIEWS = [["shortlist", "Shortlist", x => x.status === "saved" || x.sta
 async function saveToLibrary(d) {
   const id = docId(d.repo, d.path);
   if (S.library.some(x => x.id === id)) { toast("Already in your Library"); return; }
-  const doc = { repo: d.repo, path: d.path || ".", name: d.name || d.repo.split("/")[1], url: d.url || `https://github.com/${d.repo}`, stars: +d.stars || 0, desc: d.desc || "", updated: d.updated || null, status: d.status || "saved", note: "", savedAt: Date.now() };
+  const doc = { repo: d.repo, path: d.path || ".", name: d.name || d.repo.split("/")[1], url: d.url || `https://github.com/${d.repo}`, stars: +d.stars || 0, desc: d.desc || "", updated: d.updated || null, status: d.status || "saved", note: "", savedAt: Date.now(), ...(d.install ? { install: d.install } : {}) };
   if (!S.db) { S.library.push({ id, ...doc }); renderLibrary(); toast("Saved for this visit only"); return; }
   try { await S.db.collection("library").doc(id).set(doc); toast("Saved to Library"); } catch (e) { toast("Couldn't save: " + (e.code || "error")); }
 }
@@ -1105,7 +1105,8 @@ function renderLibrary() {
   const emptyCopy = { shortlist: "Nothing waiting. Everything you saved is installed or rejected.", installed: "Nothing marked installed yet. After you install a skill, press Mark installed on its Install tab, or set its status here.", rejected: "Nothing rejected.", all: "" };
   if (S.library.length && !list.length) { $("#lib-list").innerHTML = `<p class="muted" style="grid-column:1/-1;margin:0">${h(emptyCopy[view[0]])}</p>`; return; }
   if (!S.library.length) { $("#lib-list").innerHTML = `<div class="empty" style="grid-column:1/-1"><h3>Your shortlist is empty</h3><p class="muted" style="margin:0">Press <b>Save to Library</b> on any hunt result or investigation match. Saved skills keep their install commands and your notes.</p><button class="btn" data-goto="hunt">Start a hunt</button></div>`; return; }
-  $("#lib-list").innerHTML = list.map(x => `<article class="card">
+  const exportBar = view[0] === "installed" && list.length ? `<section class="panel" style="grid-column:1/-1;display:grid;gap:.5rem"><div class="head" style="align-items:center"><div><span class="eyebrow">New computer?</span><h3>Set up all ${list.length} on another Mac</h3></div><button class="btn primary" type="button" data-exportsetup>Export setup script</button></div><p class="muted" style="margin:0;font-size:var(--step--1)">One Terminal script that installs every skill below and adds the plugin marketplaces. It skips anything already installed, so it's safe to run twice. Uses no tokens.</p></section>` : "";
+  $("#lib-list").innerHTML = exportBar + list.map(x => `<article class="card">
     <div style="display:flex;justify-content:space-between;gap:10px;align-items:start"><div style="min-width:0"><div class="card-title"><a href="${h(safeUrl(x.url))}" target="_blank" rel="noopener">${h(x.name)}</a></div><div class="card-url">${h(x.repo)}${x.path !== "." ? "/" + h(x.path) : ""}</div></div><span class="mono stars muted">★ ${fmtStars(x.stars)}</span></div>
     ${x.desc ? `<p style="margin:0;font-size:.9rem">${h(x.desc.slice(0, 240))}</p>` : ""}
     <textarea data-libnote="${h(x.id)}" placeholder="Notes: what you used it for, what broke…" aria-label="Notes">${h(x.note || "")}</textarea>
@@ -1205,9 +1206,73 @@ function renderPreview() {
 }
 async function markInstalled(btn) {
   const id = docId(M.repo, M.path);
-  if (S.library.some(x => x.id === id)) await updateLib(id, { status: "installed" });
-  else await saveToLibrary({ repo: M.repo, path: M.path, name: M.fm.name || "", url: "https://github.com/" + M.repo, desc: M.fm.description || "", status: "installed" });
+  const install = M.market && !M.text
+    ? { kind: "plugin", repo: M.repo, market: M.market.name, plugin: M.market.plugins[0]?.name || M.market.name }
+    : { kind: "skill", repo: M.repo, path: M.path, name: installBlocks().name };
+  if (S.library.some(x => x.id === id)) await updateLib(id, { status: "installed", install });
+  else await saveToLibrary({ repo: M.repo, path: M.path, name: M.fm.name || "", url: "https://github.com/" + M.repo, desc: M.fm.description || "", status: "installed", install });
   if (btn) btn.textContent = "Installed ✓"; toast("Marked installed");
+}
+function buildSetupScript(items) {
+  const q = (v) => "'" + String(v).replace(/'/g, "'\\''") + "'";
+  const skills = [], plugins = [];
+  for (const x of items) {
+    const i = x.install || {};
+    if (i.kind === "plugin") plugins.push(i);
+    else skills.push({ repo: i.repo || x.repo, path: i.path || x.path || ".", name: slug(i.name || x.name || (x.path && x.path !== "." ? x.path.split("/").pop() : x.repo.split("/")[1])) });
+  }
+  const L = [];
+  L.push("#!/bin/bash");
+  L.push(`# Skill Desk setup script, generated ${new Date().toISOString().slice(0, 10)}.`);
+  L.push(`# Installs ${skills.length} skill${skills.length === 1 ? "" : "s"} into ~/.claude/skills and adds ${plugins.length} plugin marketplace${plugins.length === 1 ? "" : "s"}.`);
+  L.push("# Safe to run more than once: anything already installed is skipped. Needs git.");
+  L.push("set -u");
+  L.push('SKILLS="$HOME/.claude/skills"; mkdir -p "$SKILLS"');
+  L.push('TMP="$(mktemp -d)"; trap \'rm -rf "$TMP"\' EXIT');
+  L.push("ok=0; skipped=0; failed=0");
+  L.push("command -v git >/dev/null || { echo \"git is missing. Run: xcode-select --install, then run this script again.\"; exit 1; }");
+  L.push("");
+  L.push("skill() {  # skill <owner/repo> <folder or .> <name>");
+  L.push('  local repo="$1" path="$2" name="$3" dir="$TMP/${1//\\//-}"');
+  L.push('  if [ -d "$SKILLS/$name" ]; then echo "  = $name (already installed)"; skipped=$((skipped+1)); return; fi');
+  L.push('  [ -d "$dir" ] || git clone -q --depth 1 "https://github.com/$repo.git" "$dir" 2>/dev/null || { echo "  x $name: could not download $repo"; failed=$((failed+1)); return; }');
+  L.push('  local src="$dir"; [ "$path" != "." ] && src="$dir/$path"');
+  L.push('  if [ ! -f "$src/SKILL.md" ]; then');
+  L.push('    if [ -f "$dir/.claude-plugin/marketplace.json" ]; then echo "  ! $name: $repo is a plugin. Install it with: claude plugin marketplace add $repo"; else echo "  x $name: no SKILL.md in $repo/$path"; fi');
+  L.push("    failed=$((failed+1)); return");
+  L.push("  fi");
+  L.push('  cp -R "$src" "$SKILLS/$name" && rm -rf "$SKILLS/$name/.git" && echo "  + $name" && ok=$((ok+1))');
+  L.push("}");
+  L.push("");
+  if (skills.length) {
+    L.push('echo "Skills:"');
+    for (const k of skills) L.push(`skill ${q(k.repo)} ${q(k.path)} ${q(k.name)}`);
+  }
+  if (plugins.length) {
+    L.push("");
+    L.push('echo ""; echo "Plugin marketplaces:"');
+    L.push('if command -v claude >/dev/null; then');
+    for (const p of plugins) L.push(`  claude plugin marketplace add ${q(p.repo)} >/dev/null 2>&1 && echo "  + ${p.market}" || echo "  = ${p.market} (already added, or check: claude plugin marketplace list)"`);
+    L.push("else");
+    L.push('  echo "  Claude Code is not installed yet. Install it, then run this script again for the plugins."');
+    L.push("fi");
+    L.push('echo ""; echo "Plugins install per project. In each project folder that uses them, run:"');
+    for (const p of plugins) L.push(`echo "  claude plugin install ${p.plugin}@${p.market} --scope local"`);
+  }
+  L.push("");
+  L.push('echo ""; echo "Done: $ok installed, $skipped already there, $failed need attention."');
+  L.push('echo "Open Claude Code and run /skills to see them."');
+  return { text: L.join("\n") + "\n", skills: skills.length, plugins: plugins.length };
+}
+function openExport() {
+  const items = S.library.filter(x => x.status === "installed");
+  const sc = buildSetupScript(items);
+  M = { kind: "export", text: sc.text };
+  openModal(`<div class="modal-head"><div><span class="eyebrow">New computer</span><h2>Setup script</h2><p class="muted" style="margin:.25rem 0 0">${sc.skills} skill${sc.skills === 1 ? "" : "s"} and ${sc.plugins} plugin${sc.plugins === 1 ? "" : "s"} from your Installed list.</p></div><button class="btn ghost iconbtn" data-close="modal" aria-label="Close">✕</button></div>
+    <ol class="checklist"><li><div>Press <b>Download script</b>. It saves <code>skill-desk-setup.sh</code>, usually to Downloads.</div></li><li><div>On the new Mac, open Terminal and run <code>bash ~/Downloads/skill-desk-setup.sh</code></div></li><li><div>Plugins install per project: the script prints the one command to run inside each project folder.</div></li></ol>
+    <div class="actions"><button class="btn primary" type="button" id="export-dl" ${S.downloads ? "" : "disabled title='Downloads are off in this view'"}>Download script</button><button class="btn" type="button" id="export-copy">Copy script</button></div>
+    <pre class="skillmd" style="max-height:40vh">${h(sc.text)}</pre>
+    <p class="muted" style="margin:0;font-size:var(--step--1)">Skills you installed before this feature existed are treated as skill folders. If one of them was really a plugin, the script tells you instead of guessing.</p>`);
 }
 async function runReview() {
   if (!M || (!M.text && !M.market) || !S.sample) return;
@@ -1474,6 +1539,9 @@ document.addEventListener("click", async e => {
   else if (d.wrun) runWatch(d.wrun);
   else if ("ghAllow" in d) allowGithub();
   else if ("ghManage" in d) manageGithub();
+  else if ("exportsetup" in d) openExport();
+  else if (t.id === "export-copy" && M?.kind === "export") copy(M.text, t);
+  else if (t.id === "export-dl" && M?.kind === "export") { S.downloads.save({ filename: "skill-desk-setup.sh", data: M.text }).then(() => toast("Saved skill-desk-setup.sh")).catch(e => { if (e?.code !== "declined") toast("Download didn't finish (" + (e?.code || "error") + "). Use Copy script instead."); }); }
   else if ("radarRetry" in d) { S.mcp?.invalidate(GH).catch(() => {}); loadRadar(); }
   else if (d.wdel) { if (S.db) S.db.collection("hunts").doc(d.wdel).delete().catch(() => toast("Couldn't remove")); else { S.hunts = S.hunts.filter(x => x.id !== d.wdel); renderWatches(); } }
 });
