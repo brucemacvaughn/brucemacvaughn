@@ -331,7 +331,7 @@
       </div>
       <form class="panel" id="hunt-form" style="display:grid;gap:12px" autocomplete="off">
         <div class="hunt-bar">
-          <input id="hunt-q" placeholder="youtube transcript, figma, instagram reels…" aria-label="Search terms">
+          <input id="hunt-q" placeholder="youtube transcript, figma… or owner/repo to open one directly" aria-label="Search terms or owner/repo">
           <select id="hunt-sort" aria-label="Sort"><option value="best">Best match</option><option value="stars">Most stars</option><option value="updated">Latest</option></select>
           <button class="btn primary" type="submit">Hunt</button>
           <button class="btn" type="button" id="hunt-save" title="Re-check this search from the Radar">Watch</button>
@@ -774,7 +774,7 @@ function score(stars, d, rel) { return (Math.log10((+stars || 0) + 1) + 1.5 * Ma
 
 async function searchSkills(query, opt = {}) {
   const t = terms(query); const kw = (t.length ? t : [query.toLowerCase()]).join(" ");
-  const out = new Map(); const meta = new Map(); const errors = [];
+  const out = new Map(); const meta = new Map(); const errors = []; let codeErr = null;
   const jobs = [
     codeSearch(kw + " filename:SKILL.md").then(items => items.forEach(it => {
       const repo = it.repository?.full_name; if (!repo || !it.path) return;
@@ -782,11 +782,13 @@ async function searchSkills(query, opt = {}) {
       if (it.repository) meta.set(repo, { ...(meta.get(repo) || {}), ...it.repository });
       const frag = (it.text_matches || []).map(m => m.fragment || "").join(" ");
       out.set(repo + "|" + dir, { kind: "skill", repo, path: dir, name: dir === "." ? repo.split("/")[1] : dir.split("/").pop(), desc: "", frag, url: it.html_url || `https://github.com/${repo}`, file: it.path });
-    })).catch(e => errors.push(e)),
-    ...[`${kw} claude skill in:name,description,readme`, `${kw} topic:claude-skills`, `${kw} topic:agent-skills`].map(q =>
+    })).catch(e => { errors.push(e); codeErr = e; }),
+    // A repo literally named after the search (e.g. "impeccable") is kept even if it never says "Claude" or "skill".
+    ...[[`${kw} in:name`, true], [`${kw} claude skill in:name,description,readme`, false], [`${kw} topic:claude-skills`, false], [`${kw} topic:agent-skills`, false]].map(([q, byName]) =>
       repoSearch(q).then(items => items.forEach(r => {
         meta.set(r.full_name, { ...(meta.get(r.full_name) || {}), ...r });
-        if (!SKILLISH.test(`${r.name} ${r.description || ""} ${(r.topics || []).join(" ")}`)) return;
+        const nameHit = byName && t.some(w => r.name.toLowerCase() === w || r.name.toLowerCase() === t.join("-"));
+        if (!nameHit && !SKILLISH.test(`${r.name} ${r.description || ""} ${(r.topics || []).join(" ")}`)) return;
         const k = r.full_name + "|.";
         if (!out.has(k)) out.set(k, { kind: "repo", repo: r.full_name, path: ".", name: r.name, desc: r.description || "", frag: "", url: r.html_url, file: null });
       })).catch(e => errors.push(e))),
@@ -806,7 +808,7 @@ async function searchSkills(query, opt = {}) {
     const it = { ...x, stars: m.stargazers_count || 0, updated: m.pushed_at || m.updated_at || null, branch: m.default_branch || "main", archived: !!m.archived, repoDesc: m.description || "" };
     const hay = `${it.name} ${it.path} ${it.desc} ${it.frag} ${it.repoDesc}`.toLowerCase();
     const tt = t.length ? t : [query.toLowerCase()];
-    it.rel = tt.filter(w => hay.includes(w)).length / tt.length + (it.kind === "skill" ? 0.25 : 0);
+    it.rel = tt.filter(w => hay.includes(w)).length / tt.length + (it.kind === "skill" ? 0.25 : 0) + (it.path === "." && (it.name.toLowerCase() === tt.join("-") || it.name.toLowerCase() === tt.join("")) ? 0.75 : 0);
     it.score = score(it.stars, days(it.updated), it.rel);
     return it;
   }).filter(i => !i.archived);
@@ -815,7 +817,9 @@ async function searchSkills(query, opt = {}) {
   if (opt.maxAge) items = items.filter(i => days(i.updated) <= opt.maxAge);
   const sorters = { best: (a, b) => b.score - a.score, stars: (a, b) => b.stars - a.stars, updated: (a, b) => days(a.updated) - days(b.updated) };
   items.sort(sorters[opt.sort || "best"]);
-  return items.slice(0, opt.limit || 25);
+  items = items.slice(0, opt.limit || 25);
+  if (codeErr) items.codeError = ghErr(codeErr);
+  return items;
 }
 
 async function enrichDescriptions(items, n = 8) {
@@ -1020,6 +1024,13 @@ async function runHunt() {
   const q = $("#hunt-q").value.trim(); if (!q) { $("#hunt-q").focus(); return; }
   S.lastQuery = q; store.set("lastQuery", q);
   const st = $("#hunt-status"); const box = $("#hunt-results");
+  // "owner/repo" or a GitHub link opens that repo directly instead of searching.
+  const direct = q.match(/^(?:https?:\/\/(?:www\.)?github\.com\/)?([A-Za-z0-9][\w-]*\/[\w.-]+?)(?:\.git)?(?:\/(?:tree|blob)\/[^/]+\/(.+?))?\/?$/);
+  if (direct && (q.includes("github.com") || /^[\w-]+\/[\w.-]+$/.test(q))) {
+    const path = (direct[2] || ".").replace(/\/?SKILL\.md$/i, "") || ".";
+    st.innerHTML = `<p class="muted" style="margin:0">Opened <b>${h(direct[1])}</b> directly. Type plain words to search instead.</p>`; box.innerHTML = "";
+    openPreview(direct[1], path, null, path === "." ? "install" : "md"); return;
+  }
   if (!S.mcp) { st.innerHTML = noGithub(q); box.innerHTML = ""; return; }
   const access = await ghState(); updateGhStatus(access);
   if (access === "denied" || access === "unavailable") { st.innerHTML = ghGateHtml(access); box.innerHTML = ""; return; }
@@ -1032,7 +1043,8 @@ async function runHunt() {
     const items = await searchSkills(q, { sort: $("#hunt-sort").value, skillOnly: $("#hunt-skillonly").checked, minStars: +$("#hunt-min").value || 0, maxAge: +$("#hunt-age").value || 0 });
     S.results = items; renderResults();
     st.innerHTML = items.length ? `<p class="muted" style="margin:0">${items.length} results for “${h(q)}”. Loading descriptions…</p>` : `<div class="empty"><h3>Nothing matched “${h(q)}”</h3><p class="muted" style="margin:0">Try fewer or broader words, or clear the filters. If nothing exists, file the idea in the Inbox and have Claude draft a skill.</p></div>`;
-    if (items.length) { await enrichDescriptions(items); renderResults(); st.innerHTML = `<p class="muted" style="margin:0">${items.length} results for “${h(q)}”, ranked by ${$("#hunt-sort").selectedOptions[0].text.toLowerCase()}.</p>`; }
+    const codeNote = items.codeError ? ` <span class="muted">SKILL.md file search didn't answer this time (${h(items.codeError)}), so these are repositories only. Hunt again in a minute for individual skills.</span>` : "";
+    if (items.length) { await enrichDescriptions(items); renderResults(); st.innerHTML = `<p class="muted" style="margin:0">${items.length} results for “${h(q)}”, ranked by ${$("#hunt-sort").selectedOptions[0].text.toLowerCase()}.${codeNote} Know the repo? Type <code>owner/repo</code> to open it directly.</p>`; }
   } catch (e) { st.innerHTML = isAccessErr(e) ? ghGateHtml("prompt") : `<div class="banner warn">${h(ghErr(e))}</div>`; }
 }
 async function allowGithubQuiet() {
