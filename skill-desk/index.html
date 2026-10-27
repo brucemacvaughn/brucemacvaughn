@@ -1153,6 +1153,8 @@ function installBlocks() {
   if (M.market) {
     blocks.push({ g: "plugin", l: "This repo is a plugin marketplace. In Claude Code, add it once:", c: `/plugin marketplace add ${repo}` });
     M.market.plugins.slice(0, 6).forEach(p => blocks.push({ g: "plugin", l: `Then install ${p.name}${p.desc ? ": " + p.desc.slice(0, 90) : ""}`, c: `/plugin install ${p.name}@${M.market.name}` }));
+    const first = M.market.plugins[0];
+    if (first) blocks.push({ g: "pluginterm", l: "Or in Terminal, from inside your project folder (installs for this project only):", c: `claude plugin marketplace add ${repo} \\\n  && claude plugin install ${first.name}@${M.market.name} --scope local` });
   }
   return { name, blocks };
 }
@@ -1172,13 +1174,14 @@ function renderPreview() {
     body = !blocks.length ? (M.text == null && !M.error ? `<p class="muted"><span class="spin"></span> Loading…</p>` : `<div class="banner warn">No SKILL.md or plugin marketplace found here. <a href="https://github.com/${h(M.repo)}" target="_blank" rel="noopener">Open the repo</a> and look for a <code>skills/</code> folder, then preview that folder.</div>`)
     : `<div style="display:grid;gap:1rem">
       <p class="muted" style="margin:0">A web page can't put files on your computer, so the last step happens where you use Claude. Pick the route that matches.</p>
-      ${M.market ? `<section class="panel" style="display:grid;gap:.75rem"><span class="eyebrow">Plugin · Claude Code</span><h3>Install the plugin</h3>${grp("plugin")}<p class="muted" style="margin:0;font-size:var(--step--1)">If the install summary says <i>Run /reload-plugins to apply</i>, run <code>/reload-plugins</code>.</p></section>` : ""}
+      ${M.market ? `<section class="panel" style="display:grid;gap:.75rem"><span class="eyebrow">Plugin · Claude Code</span><h3>Install the plugin</h3>${grp("plugin")}<p class="muted" style="margin:0;font-size:var(--step--1)">Slash commands run inside Claude Code and use no tokens. If the install summary says <i>Run /reload-plugins to apply</i>, run <code>/reload-plugins</code>.</p></section>
+      <section class="panel" style="display:grid;gap:.75rem"><span class="eyebrow">Route B · paste into Terminal · uses no tokens</span><h3>Install the plugin from Terminal</h3>${grp("pluginterm")}<p class="muted" style="margin:0;font-size:var(--step--1)"><code>cd</code> into your project first. Open Claude Code there afterwards (or run <code>/reload-plugins</code> if it's already open).</p></section>` : ""}
       ${M.text ? `<section class="panel" style="display:grid;gap:.75rem"><span class="eyebrow">Route A · Easiest · paste into Claude, not Terminal</span><h3>Let Claude Code install it</h3>${grp("claude")}<p class="muted" style="margin:0;font-size:var(--step--1)">Claude shows you the files, copies the folder, and checks it loaded. Use a session running on your own computer: a cloud session (claude.ai/code) would install it into a temporary container that disappears.</p></section>
       <section class="panel" style="display:grid;gap:.75rem"><span class="eyebrow">Route B · paste into Terminal · uses no tokens</span><h3>Copy the folder yourself</h3>${grp("term")}</section>
       <section class="panel" style="display:grid;gap:.75rem"><span class="eyebrow">Route C · claude.ai &amp; the Claude app</span><h3>Upload it to your account</h3>
         <ol class="checklist"><li><div>Press <b>Download .zip</b> below. You get a folder named <code>${h(name)}</code>.</div></li><li><div>In claude.ai, open <b>Settings → Capabilities</b>, find <b>Skills</b>, and upload the .zip.</div></li><li><div>It then works in claude.ai chats, Cowork and cloud sessions, and syncs down to Claude Code.</div></li></ol></section>` : ""}
       <section class="panel" style="display:grid;gap:.75rem"><span class="eyebrow">Then</span>
-        <ol class="checklist"><li><div>In Claude Code, run <code>/skills</code> and check that <code>${h(name)}</code> is listed. No restart needed. If <code>~/.claude/skills</code> is brand new, run <code>/reload-skills</code> once.</div></li><li><div>Type <code>/${h(name)}</code> to run it, or ask for the task in plain words.</div></li></ol>
+        <ol class="checklist">${M.market && !M.text ? `<li><div>In Claude Code, run <code>/plugin</code> and check the <b>Installed</b> tab lists it. Its commands start with <code>/${h(M.market.plugins[0]?.name || name)}</code>.</div></li>` : ""}<li><div>In Claude Code, run <code>/skills</code> and check that <code>${h(name)}</code> is listed. No restart needed. If <code>~/.claude/skills</code> is brand new, run <code>/reload-skills</code> once.</div></li><li><div>Type <code>/${h(name)}</code> to run it, or ask for the task in plain words.</div></li></ol>
         <div class="actions"><button class="btn primary" type="button" data-markinstalled>${saved?.status === "installed" ? "Installed ✓" : "Mark installed"}</button><span class="muted" style="font-size:var(--step--1)">Moves it to Installed in your Library.</span></div>
       </section></div>`;
   } else {
