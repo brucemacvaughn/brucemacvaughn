@@ -1121,8 +1121,8 @@ let M = null; // current modal state
 function openModal(html) { $("#modal-box").innerHTML = html; $("#modal").hidden = false; $("#modal-box").focus?.(); }
 function closeModal() { $("#modal").hidden = true; $("#modal-box").innerHTML = ""; if (M?.ctl) M.ctl.abort(); M = null; }
 
-async function openPreview(repo, path, branch, tab) {
-  M = { kind: "preview", repo, path: path || ".", branch: branch || null, tab: tab || "md", text: null, fm: {}, market: null, review: null, error: null };
+async function openPreview(repo, path, branch, tab, from) {
+  M = { kind: "preview", from: from || null, repo, path: path || ".", branch: branch || null, tab: tab || "md", text: null, fm: {}, market: null, review: null, error: null };
   renderPreview();
   if (!S.mcp) { M.error = "Previews need the GitHub connector. Add GitHub in claude.ai Settings → Connectors, then reload."; renderPreview(); return; }
   const file = M.path === "." ? "SKILL.md" : M.path.replace(/\/$/, "") + "/SKILL.md";
@@ -1137,8 +1137,44 @@ async function openPreview(repo, path, branch, tab) {
     const mj = JSON.parse(fileText(await readFile(repo, ".claude-plugin/marketplace.json")) || "null");
     if (mj && mj.name) M.market = { name: String(mj.name), plugins: (mj.plugins || []).map(p => ({ name: String(p.name || ""), desc: String(p.description || ""), source: typeof p.source === "string" ? p.source : "" })).filter(p => p.name).slice(0, 12) };
   } catch {}
+  if (M && !M.text && !M.market) await loadCollection(M);
   if (M) renderPreview();
 }
+// A repo with many skill folders and no SKILL.md at the top: list the skills so one can be picked.
+async function loadCollection(m) {
+  const found = new Map();
+  try {
+    (await codeSearch(`repo:${m.repo} filename:SKILL.md`, 100)).forEach(it => {
+      if (!it.path) return; const dir = it.path.includes("/") ? it.path.replace(/\/[^/]+$/, "") : "."; if (dir !== ".") found.set(dir, { path: dir, name: dir.split("/").pop(), sure: true });
+    });
+  } catch {}
+  if (!found.size) {
+    // Code search can lag for new repos: fall back to folder names at the top and in skills/.
+    try {
+      const [owner, name] = m.repo.split("/");
+      const top = asJson(await ghCall("get_file_contents", { owner, repo: name, path: "/", fields: ["type", "name", "path"] })) || [];
+      const dirs = top.filter(f => f.type === "dir" && !f.name.startsWith("."));
+      const sk = dirs.find(d => /^(skills?|\.claude)$/i.test(d.name));
+      const inner = sk ? (asJson(await ghCall("get_file_contents", { owner, repo: name, path: sk.path, fields: ["type", "name", "path"] })) || []).filter(f => f.type === "dir") : [];
+      (inner.length ? inner : dirs).forEach(d => found.set(d.path, { path: d.path, name: d.name, sure: false }));
+    } catch {}
+  }
+  if (M !== m) return;
+  m.collection = [...found.values()].sort((a, b) => a.name.localeCompare(b.name));
+  if (m.collection.length) { m.error = null; if (m.tab === "install") m.tab = "md"; }
+}
+function collectionHtml() {
+  const c = M.collection; const q = (M.cfilter || "").toLowerCase();
+  return `<div style="display:grid;gap:.75rem">
+    <p style="margin:0">This repo is a <b>collection of ${c.length} skills</b>. Pick one to preview, safety-read and install it on its own.${c.some(x => !x.sure) ? ` <span class="muted">GitHub's file index hasn't caught up with this repo, so these are folder names. Some may not be skills.</span>` : ""}</p>
+    <input class="field" id="cfilter" placeholder="Filter ${c.length} skills…" value="${h(M.cfilter || "")}" aria-label="Filter skills">
+    <div class="mini" id="clist" style="max-height:46vh;overflow:auto">${collectionRows(q)}</div></div>`;
+}
+function collectionRows(q) {
+  const list = M.collection.filter(x => !q || x.name.toLowerCase().includes(q) || x.path.toLowerCase().includes(q));
+  return list.map(x => `<a href="#" data-preview="${h(M.repo)}" data-path="${h(x.path)}" data-from="${h(M.repo)}"><span>${h(x.name)} <small class="muted mono">${h(x.path)}</small></span><span class="mono muted">Preview →</span></a>`).join("") || `<p class="muted">No skills match.</p>`;
+}
+document.addEventListener("input", e => { if (e.target.id === "cfilter" && M?.collection) { M.cfilter = e.target.value; $("#clist").innerHTML = collectionRows(M.cfilter.toLowerCase()); } });
 function installBlocks() {
   const { repo, path } = M; const name = slug(M.fm.name || (path === "." ? repo.split("/")[1] : path.split("/").pop()));
   const tmp = "/tmp/" + slug(repo.replace("/", "-"));
@@ -1164,7 +1200,9 @@ function renderPreview() {
   const where = M.repo + (M.path !== "." ? "/" + M.path : "");
   const tabs = [["md", "SKILL.md"], ["install", "Install"], ["safety", "Safety read"]];
   let body = "";
-  if (M.tab === "md") {
+  if (M.collection?.length && M.tab !== "safety") {
+    body = collectionHtml();
+  } else if (M.tab === "md") {
     body = M.error ? `<div class="banner warn">${h(M.error)}</div>` : M.text == null ? `<p class="muted"><span class="spin"></span> Loading SKILL.md…</p>` :
       `${M.fm.description ? `<p style="margin:0"><b>Triggers on:</b> ${h(M.fm.description)}</p>` : ""}${M.fm["allowed-tools"] ? `<p style="margin:0"><b>Pre-approved tools:</b> <code>${h(M.fm["allowed-tools"])}</code></p>` : ""}<pre class="skillmd">${h(M.text.slice(0, 40000))}</pre>`;
   } else if (M.tab === "install") {
@@ -1187,7 +1225,7 @@ function renderPreview() {
       </section></div>`;
   } else {
     const r = M.review;
-    body = !M.text && !M.market ? `<p class="muted">Load a SKILL.md first.</p>` : !r ? `<div style="display:grid;gap:10px;justify-items:start"><p style="margin:0">Claude reads the SKILL.md and lists the scripts, then tells you what the skill does, what it needs, and anything risky.</p><button class="btn primary" id="do-review" ${S.sample ? "" : "disabled"}>${S.sample ? "Run safety read" : "Claude isn't available here"}</button></div>`
+    body = !M.text && !M.market ? `<p class="muted">${M.collection?.length ? "Pick a skill from the list first, then run its Safety read." : "Load a SKILL.md first."}</p>` : !r ? `<div style="display:grid;gap:10px;justify-items:start"><p style="margin:0">Claude reads the SKILL.md and lists the scripts, then tells you what the skill does, what it needs, and anything risky.</p><button class="btn primary" id="do-review" ${S.sample ? "" : "disabled"}>${S.sample ? "Run safety read" : "Claude isn't available here"}</button></div>`
       : r.loading ? `<p class="muted"><span class="spin"></span> Reading the skill…</p>` : r.error ? `<div class="banner warn">${h(r.error)}</div>` :
       `<div style="display:grid;gap:12px"><div><span class="verdict ${h(r.verdict)}">${h({ safe: "Looks safe", review: "Review carefully", avoid: "Avoid" }[r.verdict] || r.verdict)}</span></div>
        <p style="margin:0">${h(r.summary)}</p>
@@ -1195,7 +1233,7 @@ function renderPreview() {
        ${r.risks?.length ? `<div style="display:grid;gap:6px"><b>Flags</b>${r.risks.map(x => `<div class="risk"><b class="${h(x.level)}">${h(x.level)}</b><span>${h(x.note)}</span></div>`).join("")}</div>` : `<p class="muted" style="margin:0">No flags raised.</p>`}
        <p class="muted" style="margin:0;font-size:.85rem">A second opinion from Claude, not a guarantee. Read the scripts yourself before installing.</p></div>`;
   }
-  openModal(`<div class="modal-head"><div style="min-width:0"><span class="eyebrow">Skill preview</span><h2 style="overflow-wrap:anywhere">${h(M.fm.name || (M.path !== "." ? M.path.split("/").pop() : M.repo.split("/")[1]))}</h2><a class="mono" style="font-size:.82rem;overflow-wrap:anywhere" href="https://github.com/${h(M.repo)}${M.path !== "." ? "/tree/HEAD/" + h(M.path) : ""}" target="_blank" rel="noopener">${h(where)}</a></div><button class="btn ghost iconbtn" data-close="modal" aria-label="Close">✕</button></div>
+  openModal(`<div class="modal-head"><div style="min-width:0"><span class="eyebrow">${M.from ? `<a href="#" data-backto="${h(M.from)}">← ${h(M.from)}</a> · ` : ""}${M.collection?.length ? "Skill collection" : "Skill preview"}</span><h2 style="overflow-wrap:anywhere">${h(M.fm.name || (M.path !== "." ? M.path.split("/").pop() : M.repo.split("/")[1]))}</h2><a class="mono" style="font-size:.82rem;overflow-wrap:anywhere" href="https://github.com/${h(M.repo)}${M.path !== "." ? "/tree/HEAD/" + h(M.path) : ""}" target="_blank" rel="noopener">${h(where)}</a></div><button class="btn ghost iconbtn" data-close="modal" aria-label="Close">✕</button></div>
     <div class="tabs" role="tablist">${tabs.map(([k, v]) => `<button role="tab" aria-selected="${M.tab === k}" data-mtab="${k}">${v}</button>`).join("")}</div>
     ${body}
     <div class="actions" style="border-top:1px solid var(--line);padding-top:14px">
@@ -1503,7 +1541,7 @@ $("#modal").addEventListener("click", e => { if (e.target.id === "modal") closeM
 $("#keys").addEventListener("click", e => { if (e.target.id === "keys") $("#keys").hidden = true; });
 
 document.addEventListener("click", async e => {
-  const t = e.target.closest("button, [data-goto]"); if (!t) return;
+  const t = e.target.closest("button, [data-goto], a[data-preview], a[data-backto]"); if (!t) return;
   const d = t.dataset;
   if (d.close === "modal") closeModal();
   else if (d.close === "keys") $("#keys").hidden = true;
@@ -1523,7 +1561,8 @@ document.addEventListener("click", async e => {
   else if (d.notesave) { const v = $("#note-" + CSS.escape(d.notesave))?.value ?? ""; await saveLink(d.notesave, { note: v.slice(0, 4000) }); renderInbox(); }
   else if ("notecancel" in d) t.closest(".note-edit")?.remove();
   else if (d.hunt) { $("#hunt-q").value = d.hunt; setTab("hunt"); runHunt(); }
-  else if (d.preview) openPreview(d.preview, d.path, d.branch, d.tab);
+  else if (d.preview) { e.preventDefault?.(); openPreview(d.preview, d.path, d.branch, d.tab, d.from); }
+  else if (d.backto) openPreview(d.backto, ".", null, "md");
   else if ("markinstalled" in d && M) markInstalled(t);
   else if (d.save) { try { await saveToLibrary(JSON.parse(d.save)); t.textContent = "Saved ✓"; } catch {} }
   else if (d.build) openBuild(d.build);
